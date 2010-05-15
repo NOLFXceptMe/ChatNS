@@ -1,0 +1,5 @@
+A simple chat server and client
+
+TODO:
+- Set number of users dynamically, at server startup [Easy]
+- Send message to clients when someone exits (?) [Easy]
