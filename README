@@ -1,4 +1,4 @@
-A simple chat server and client
+A simple chat server and client licensed under the MIT License/X11 License
 
 TODO:
 - Set number of users dynamically, at server startup [Easy]
