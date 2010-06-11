@@ -37,9 +37,11 @@
 #include<sys/socket.h>
 #include<arpa/inet.h>
 
+#define MAX(num1, num2)	((num1)<(num2)?(num2):(num1))
 #define	SVR_PORT	50000
 #define MAX_STR_SZ	500
 
+#define MAX_USERS	5
 #define ERR_LONG_STR	"Server:: Message too long\n"
 #define ERR_USER	"Server:: Too many users, please try after some time\n"
 #define ERR_TIMEOUT	"Server:: Online for too long\n"
@@ -47,20 +49,19 @@
 
 #define TIMEOUT_VAL	600
 
-int sockFd, newSockFd[5];
-struct sockaddr_in servAddr, cliAddr[5];
-socklen_t servLen, cliLen[5];
-pthread_t serverHandlerThread, clientHandlerThread[5], auxThread;
-int threadIndex[5];
-int auxReadPipes[5][2];		//Aux thread reads from this
-int auxWritePipes[5][2];	//Aux thread writes into this
+int sockFd, newSockFd[MAX_USERS];
+struct sockaddr_in servAddr, cliAddr[MAX_USERS];
+socklen_t servLen, cliLen[MAX_USERS];
+pthread_t serverHandlerThread, clientHandlerThread[MAX_USERS], auxThread;
+int threadIndex[MAX_USERS];
+int auxReadPipes[MAX_USERS][2];		//Aux thread reads from this
+int auxWritePipes[MAX_USERS][2];	//Aux thread writes into this
 
 void* serverMain(void *);
 void* clientHandlerThreadFunc(void *);
 void* auxFunc(void *);
 int getNextFreeIndex(void);
-inline int max(int, int);
-int max5(int [][2], int);
+int maxAuxReadPipes(int [][2], int);
 
 int main()
 {
@@ -102,7 +103,7 @@ void* serverMain(void *arg)
 	}
 
 	//Initialize newSockFd
-	for(i=0;i<5;++i)
+	for(i=0;i<MAX_USERS;++i)
 		newSockFd[i] = -1;
 
 	//Wait on accept call
@@ -144,7 +145,7 @@ void* clientHandlerThreadFunc(void* index)
 	int threadIndex = *((int *)index);
 	char userName[MAX_STR_SZ];
 	int messageLength, recvLength, metaBufferLength;
-	char *messageBuffer;
+	char *messageBuffer = NULL;
 	fd_set fdset;
 	struct timeval timeout;
 	char errorBuffer[MAX_STR_SZ];
@@ -183,19 +184,20 @@ void* clientHandlerThreadFunc(void* index)
 
 	write(auxReadPipes[threadIndex][1], &metaBufferLength, sizeof(int));
 	write(auxReadPipes[threadIndex][1], metaBuffer, metaBufferLength);
-	free(messageBuffer);
+	if(messageBuffer != NULL)
+		free(messageBuffer);
 
 	while(1){
 		FD_ZERO(&fdset);
 		FD_SET(auxWritePipes[threadIndex][0], &fdset);
 		FD_SET(newSockFd[threadIndex], &fdset);
 
-		select(max(auxWritePipes[threadIndex][0], newSockFd[threadIndex])+1, &fdset, NULL, NULL, &timeout);
+		select(MAX(auxWritePipes[threadIndex][0], newSockFd[threadIndex])+1, &fdset, NULL, NULL, &timeout);
 
 		if(FD_ISSET(auxWritePipes[threadIndex][0], &fdset)){
 			recvLength = read(auxWritePipes[threadIndex][0], &messageLength, sizeof(int));
 			if(recvLength<sizeof(int)){
-				printf("Error: Expected %lu of data, failed\n", sizeof(int));
+				printf("Error: Expected %u of data, failed\n", sizeof(int));
 				break;
 			}
 
@@ -303,27 +305,22 @@ void *auxFunc(void *arg)
 	int messageLength;
 	char* messageBuffer;
 	
-	for(i=0;i<5;++i){
+	for(i=0;i<MAX_USERS;++i){
 		pipe(auxReadPipes[i]);
 		pipe(auxWritePipes[i]);
 	}
 
 	while(1){
 		FD_ZERO(&fdset);
-		for(i=0;i<5;++i)
+		for(i=0;i<MAX_USERS;++i)
 			FD_SET(auxReadPipes[i][0], &fdset);
 
-		select(max5(auxReadPipes, 0)+1, &fdset, NULL, NULL, NULL);
-		if(FD_ISSET(auxReadPipes[0][0], &fdset)){
-			activePipeIndex = 0;
-		}else if(FD_ISSET(auxReadPipes[1][0], &fdset)){
-			activePipeIndex = 1;
-		}else if(FD_ISSET(auxReadPipes[2][0], &fdset)){
-			activePipeIndex = 2;
-		}else if(FD_ISSET(auxReadPipes[3][0], &fdset)){
-			activePipeIndex = 3;
-		}else if(FD_ISSET(auxReadPipes[4][0], &fdset)){
-			activePipeIndex = 4;
+		select(maxAuxReadPipes(auxReadPipes, 0)+1, &fdset, NULL, NULL, NULL);
+		for(i=0;i<MAX_USERS;++i){
+			if(FD_ISSET(auxReadPipes[i][0], &fdset)){
+				activePipeIndex = i;
+				continue;
+			}
 		}
 
 		read(auxReadPipes[activePipeIndex][0], &messageLength, sizeof(int));
@@ -334,7 +331,7 @@ void *auxFunc(void *arg)
 		printf("auxThread:: Received from thread %d exact string \"%s\" of length %d\n", activePipeIndex, messageBuffer, messageLength);
 #endif	/* NDEBUG */
 
-		for(i=0;i<5;++i){
+		for(i=0;i<MAX_USERS;++i){
 			if(newSockFd[i] != -1){
 #ifndef NDEBUG
 				printf("auxThread:: Writing message to pipe %d\n", i);
@@ -349,24 +346,19 @@ void *auxFunc(void *arg)
 int getNextFreeIndex()
 {
 	int i;
-	for(i=0;i<5;++i){
+	for(i=0;i<MAX_USERS;++i){
 		if(newSockFd[i] == -1)
 			return i;
 	}
 	return -1;
 }
 
-inline int max(int num1, int num2)
-{
-	return ((num1<num2)?num2:num1);
-}
-
-int max5(int array[][2], int index)
+int maxAuxReadPipes(int array[][2], int index)
 {
 	int i;
 	int max = array[0][index];
 
-	for(i=1;i<5;++i){
+	for(i=1;i<MAX_USERS;++i){
 		if(array[i][index]>max)
 			max = array[i][index];
 	}
